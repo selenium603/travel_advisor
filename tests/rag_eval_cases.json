@@ -1,0 +1,13 @@
+[
+  {"query": "越秀区有什么旅游线路？", "source": "广州旅游路线.txt", "contains": "中共三大会址纪念馆"},
+  {"query": "海珠区的亲子研学路线经过哪些地点？", "source": "广州旅游路线.txt", "contains": "海心桥→广州塔"},
+  {"query": "番禺区有哪些古镇文化线路？", "source": "广州旅游路线.txt", "contains": "沙湾古镇"},
+  {"query": "广州白云山附近有什么自然生态线路？", "destination": "广州", "source": "广州旅游路线.txt", "contains": "白云山风景名胜区"},
+  {"query": "上海有哪些工业旅游资源？", "destination": "上海", "source": "上海.pdf#page=39", "contains": "上海汽车博物馆"},
+  {"query": "上海有哪些古镇旅游资源？", "destination": "上海", "source": "上海.pdf#page=39", "contains": "朱家角古镇"},
+  {"query": "上海有哪些文博场馆？", "destination": "上海", "source": "上海.pdf", "contains": "博物馆"},
+  {"query": "上海位于中国哪里？", "destination": "上海", "source": "上海.pdf#page=6", "contains": "上海位于"},
+  {"query": "广州火星殖民基地在哪里？", "destination": "广州", "no_hit": true},
+  {"query": "成都有哪些旅游线路？", "destination": "成都", "no_hit": true},
+  {"query": "外滩和豫园如何安排游览顺序？", "destination": "上海", "no_hit": true}
+]

@@ -1,0 +1,18 @@
+# Core AI framework
+crewai[tools]
+
+# Local RAG vector database (embeddings use the OpenRouter API via httpx)
+chromadb
+pypdfium2
+
+# HTTP client for API services
+httpx
+
+# Backend API
+fastapi
+uvicorn
+websockets
+
+# Utilities
+python-dotenv
+pydantic
