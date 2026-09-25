@@ -7,6 +7,7 @@ export function usePlanStream() {
   const [itinerary, setItinerary] = useState(null);
   const [itineraryId, setItineraryId] = useState(null);
   const [error, setError] = useState(null);
+  const [memoryWarning, setMemoryWarning] = useState(null);
   const controllerRef = useRef(null);
   const requestRef = useRef(0);
 
@@ -20,9 +21,10 @@ export function usePlanStream() {
     setItinerary(null);
     setItineraryId(null);
     setError(null);
+    setMemoryWarning(null);
   }, []);
 
-  const sendRequest = useCallback(async (message) => {
+  const sendRequest = useCallback(async (message, formDetails = null, sessionId = null, tripIdea = null) => {
     reset();
     const requestId = requestRef.current;
     const controller = new AbortController();
@@ -62,6 +64,9 @@ export function usePlanStream() {
           setError(/[\u4e00-\u9fff]/.test(data.message || "")
             ? data.message : "行程规划失败，请检查服务配置后重试。");
           break;
+        case "memory_warning":
+          setMemoryWarning(data.message);
+          break;
         default:
           break;
       }
@@ -71,7 +76,7 @@ export function usePlanStream() {
       const response = await fetch("/api/plan/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, form_details: formDetails, session_id: sessionId, trip_idea: tripIdea }),
         signal: controller.signal,
       });
       if (!response.ok || !response.body) throw new Error("stream unavailable");
@@ -99,5 +104,5 @@ export function usePlanStream() {
     }
   }, [reset]);
 
-  return { status, agents, agentProgress, itinerary, itineraryId, error, sendRequest, reset };
+  return { status, agents, agentProgress, itinerary, itineraryId, error, memoryWarning, sendRequest, reset };
 }

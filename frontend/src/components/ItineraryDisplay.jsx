@@ -1,7 +1,16 @@
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Download, Copy, Check } from "lucide-react";
 import { useState } from "react";
 import { localizeRequest } from "../utils/localizeRequest";
+
+const markdownComponents = {
+  table: ({ children }) => (
+    <div className="markdown-table">
+      <table>{children}</table>
+    </div>
+  ),
+};
 
 export default function ItineraryDisplay({ itinerary, request, streaming = false }) {
   const [copied, setCopied] = useState(false);
@@ -60,7 +69,9 @@ export default function ItineraryDisplay({ itinerary, request, streaming = false
 
       {/* Itinerary content */}
       <div className="bg-white border border-slate-200 rounded-xl p-6 itinerary-content">
-        <ReactMarkdown>{itinerary}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+          {itinerary}
+        </ReactMarkdown>
       </div>
     </div>
   );

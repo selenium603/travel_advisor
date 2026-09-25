@@ -58,10 +58,14 @@
   margin: 1rem 0;
   border-color: #e2e8f0;
 }
+.itinerary-content .markdown-table {
+  overflow-x: auto;
+  margin-bottom: 1rem;
+}
 .itinerary-content table {
   width: 100%;
   border-collapse: collapse;
-  margin-bottom: 1rem;
+  min-width: 36rem;
 }
 .itinerary-content th,
 .itinerary-content td {

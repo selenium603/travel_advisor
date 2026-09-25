@@ -98,10 +98,36 @@ All services are **async** (httpx), fetch in **parallel** via `asyncio.gather`, 
 
 ### 1. Request Parsing
 ```
-"Plan 5 days in Paris for art and food" 
-    --> AI extracts --> { destination: "Paris", country: "France", 
-                          interests: ["art", "food"], days: 5, ... }
+User request + explicit form + user memory
+    --> CrewAI structured output (TravelPlanParams)
+    --> form overrides inferred values
+    --> Pydantic and business validation
+    --> at most one repair attempt
+    --> external travel APIs
 ```
+
+### Session and profile memory
+
+`data/itineraries.json` remains the history of generated plans. `data/memory.json` is a
+separate, local single-user memory store:
+
+- **Short term:** A browser tab keeps a stable `session_id` in `sessionStorage`. The
+  backend retains the last eight messages, the current plan state, and validated trip
+  parameters. Up to 50 sessions are retained.
+- **Long term:** One profile stores lodging, food, pace, sights, and budget preferences.
+  Each entry has a value, `updated_at`, and its source. Explicit new preferences replace
+  the value in the same category; `changes` records the old and new values.
+- **Extraction:** A structured preference task runs only for wording that could state a
+  durable preference. An update is accepted only when its source quote occurs verbatim
+  in the user's message and itself expresses a durable preference. One-trip choices do
+  not become profile preferences. If extraction fails, the trip still runs and the UI
+  shows a warning. Users can inspect, edit, or delete entries in **My
+  Travel Memory**.
+- **Priority:** Current form > current trip request > long-term profile > prior session
+  messages. Previous destinations, dates, and traveler counts never fill a new trip.
+  Memory is passed to the planner, relevant provider searches, and itinerary compiler.
+
+The profile is local to this app instance, not an authenticated multi-user account.
 
 ### 2. Parallel API Fetching (no AI)
 ```python
@@ -134,9 +160,10 @@ backend/
 │   └── knowledge/          # ChromaDB RAG
 ├── agents/                  # AI layer
 │   ├── llm.py             # Gemini factory
-│   ├── definitions.py     # 3 agent definitions
-│   ├── tasks.py           # 3 task definitions
+│   ├── definitions.py     # Planning, repair, knowledge, and compiler agents
+│   ├── tasks.py           # Structured planning and itinerary tasks
 │   └── tools.py           # CrewAI RAG tool wrapper
+├── memory/                  # Session/profile store and preference extraction
 ├── crew/orchestrator.py     # Main pipeline
 └── api/                     # FastAPI
     ├── routes.py           # REST endpoints

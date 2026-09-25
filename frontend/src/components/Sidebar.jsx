@@ -1,4 +1,4 @@
-import { Clock, Trash2, MapPin, X } from "lucide-react";
+import { Clock, Trash2, MapPin, X, Brain } from "lucide-react";
 import { localizeRequest } from "../utils/localizeRequest";
 
 const STATUS_LABELS = {
@@ -7,7 +7,10 @@ const STATUS_LABELS = {
   failed: "失败",
 };
 
-export default function Sidebar({ history, onSelect, onDelete, isOpen, onClose }) {
+const isStaleProcessing = (item) => item.status === "processing"
+  && Date.now() - new Date(item.created_at).getTime() > 30 * 60 * 1000;
+
+export default function Sidebar({ history, onSelect, onDelete, onMemory, isOpen, onClose }) {
   return (
     <>
       {/* Overlay behind the history panel */}
@@ -39,6 +42,11 @@ export default function Sidebar({ history, onSelect, onDelete, isOpen, onClose }
           </button>
         </div>
 
+        <button onClick={() => { onMemory(); onClose(); }}
+          className="mx-3 mt-3 p-2.5 flex items-center gap-2 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 text-sm font-medium">
+          <Brain size={16} /> 我的旅行记忆
+        </button>
+
         <div className="flex-1 overflow-y-auto p-2">
           {history.length === 0 ? (
             <div className="text-center py-8 px-4">
@@ -47,7 +55,7 @@ export default function Sidebar({ history, onSelect, onDelete, isOpen, onClose }
                 暂无历史行程
               </p>
               <p className="text-xs text-slate-400 mt-1">
-                规划完成的行程会显示在这里。
+                提交过的旅行要求会显示在这里。
               </p>
             </div>
           ) : (
@@ -76,12 +84,14 @@ export default function Sidebar({ history, onSelect, onDelete, isOpen, onClose }
                         className={
                           item.status === "completed"
                             ? "text-green-500"
+                            : isStaleProcessing(item)
+                            ? "text-amber-600"
                             : item.status === "processing"
                             ? "text-blue-500"
                             : "text-red-500"
                         }
                       >
-                        {STATUS_LABELS[item.status] || "未知状态"}
+                        {isStaleProcessing(item) ? "可能已中断" : STATUS_LABELS[item.status] || "未知状态"}
                       </span>
                     </p>
                   </div>

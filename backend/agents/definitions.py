@@ -20,13 +20,13 @@ def create_travel_manager(tools: List = None) -> Agent:
             "Analyze user travel requests and extract structured parameters: "
             "destinations, dates, duration, number of travelers, budget level, "
             "interests, cabin class, and special requirements. "
-            "Output a clear, structured breakdown that downstream services can use."
+            "Return typed travel parameters for validation before any service call."
         ),
         backstory=(
             "You are a seasoned travel planning expert with 15 years of experience. "
             "You have a talent for understanding what travelers really want, even when "
             "they don't articulate it fully. You extract precise details from vague requests "
-            "and fill in reasonable defaults for missing information. You think about the "
+            "and identify missing required information rather than invent it. You think about the "
             "traveler's experience holistically and anticipate needs they haven't mentioned."
         ),
         tools=tools or [],
@@ -34,6 +34,19 @@ def create_travel_manager(tools: List = None) -> Agent:
         verbose=True,
         allow_delegation=False,
         max_iter=10,
+    )
+
+
+def create_parameter_repair_agent() -> Agent:
+    """Correct one invalid structured planning result without fetching travel data."""
+    return Agent(
+        role="Travel Parameter Repairer",
+        goal="Repair a TravelPlanParams object using the original request and validation errors.",
+        backstory="You correct structured travel parameters without guessing missing facts.",
+        llm=create_gemini_llm(),
+        verbose=True,
+        allow_delegation=False,
+        max_iter=3,
     )
 
 

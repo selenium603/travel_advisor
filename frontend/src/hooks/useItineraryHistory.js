@@ -32,9 +32,21 @@ export function useItineraryHistory() {
     }
   }, []);
 
+  const refreshItinerary = useCallback(async (id) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/itineraries/${id}`);
+      if (!res.ok) return null;
+      const item = await res.json();
+      setHistory((previous) => previous.map((entry) => entry.id === id ? item : entry));
+      return item;
+    } catch {
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
     fetchHistory();
   }, [fetchHistory]);
 
-  return { history, loading, fetchHistory, deleteItinerary };
+  return { history, loading, fetchHistory, refreshItinerary, deleteItinerary };
 }

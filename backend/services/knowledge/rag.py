@@ -8,6 +8,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Optional
 
 import chromadb
@@ -282,6 +283,7 @@ class _BM25:
 class RAGService:
     """Retrieve short passages and return their complete source units."""
 
+    _init_lock = Lock()
     _collection = None
     _parents: list[_Unit] = []
     _chunks: list[_Chunk] = []
@@ -294,10 +296,12 @@ class RAGService:
             Path(knowledge_base_path) if knowledge_base_path else PROJECT_ROOT / "data" / "travel_knowledge"
         )
         if RAGService._collection is None:
-            try:
-                self._initialize()
-            except Exception as exc:
-                logger.error("Travel knowledge initialization failed: %s", type(exc).__name__)
+            with RAGService._init_lock:
+                if RAGService._collection is None:
+                    try:
+                        self._initialize()
+                    except Exception:
+                        logger.exception("Travel knowledge initialization failed")
 
     @staticmethod
     def _embed(texts: list[str]) -> list[list[float]]:
@@ -343,8 +347,13 @@ class RAGService:
         for path in files:
             raw = path.read_bytes()
             relative = path.relative_to(self.knowledge_base_path).as_posix()
+            try:
+                units = _load_units(path, self.knowledge_base_path)
+            except pypdfium2.PdfiumError:
+                logger.exception("Skipping unreadable travel PDF: %s", relative)
+                continue
             manifest.update(relative.encode("utf-8") + b"\0" + raw)
-            parents.extend(_load_units(path, self.knowledge_base_path))
+            parents.extend(units)
         chunks = [_Chunk(parent_index, passage)
                   for parent_index, unit in enumerate(parents)
                   for passage in _search_passages(unit.text)]

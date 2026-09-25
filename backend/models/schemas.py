@@ -3,8 +3,8 @@ Normalized data models for all services.
 These provide a consistent format regardless of which API provider returned the data.
 """
 
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from pydantic import BaseModel, Field, field_validator
+from typing import List, Literal, Optional
 from datetime import date
 
 
@@ -158,22 +158,78 @@ class LogisticsResult(BaseModel):
 
 # ── Request Models ────────────────────────────────────────────────────────────
 
+class TravelFormDetails(BaseModel):
+    """Values explicitly entered in the trip form; these override inferred values."""
+
+    origin: str
+    departure_date: date
+    return_date: date
+    travelers: int = Field(ge=1, le=20)
+    budget_level: Literal["budget", "mid-range", "luxury", "ultra-luxury"]
+    interests: List[str] = Field(default_factory=list)
+    traveler_details: str = ""
+    special_requirements: str = ""
+
+
 class TravelRequest(BaseModel):
     message: str
+    form_details: Optional[TravelFormDetails] = None
+    session_id: Optional[str] = Field(default=None, max_length=100)
+    trip_idea: Optional[str] = Field(default=None, max_length=2000)
+
+
+PreferenceCategory = Literal["lodging", "food", "pace", "sights", "budget"]
+
+
+class PreferenceUpdate(BaseModel):
+    category: PreferenceCategory
+    value: str = Field(min_length=1, max_length=300)
+    source_quote: str = Field(min_length=1, max_length=500)
+
+
+class PreferenceExtraction(BaseModel):
+    updates: List[PreferenceUpdate] = Field(default_factory=list)
+
+
+class PreferenceEdit(BaseModel):
+    value: str = Field(min_length=1, max_length=300)
+
+
+class PreferenceMessage(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    session_id: Optional[str] = Field(default=None, max_length=100)
 
 
 class TravelPlanParams(BaseModel):
-    """Structured parameters extracted from natural language request by AI."""
-    destinations: List[str]
-    origin: str = ""
-    departure_date: Optional[str] = None
-    return_date: Optional[str] = None
-    duration_days: int = 7
-    travelers: int = 1
-    budget_level: str = "mid-range"  # budget, mid-range, luxury
-    interests: List[str] = []
-    cabin_class: str = "economy"
-    special_requirements: List[str] = []
+    """Structured planning output before any external travel API is called."""
+
+    destinations: List[str] = Field(min_length=1)
+    destination_country: str
+    origin: str
+    departure_date: date
+    return_date: date
+    duration_days: int = Field(ge=1, le=90)
+    travelers: int = Field(ge=1, le=20)
+    budget_level: Literal["budget", "mid-range", "luxury", "ultra-luxury"]
+    interests: List[str] = Field(default_factory=list)
+    cabin_class: Literal["economy", "premium_economy", "business", "first"] = "economy"
+    special_requirements: List[str] = Field(default_factory=list)
+
+    @field_validator("destinations")
+    @classmethod
+    def clean_destinations(cls, cities: List[str]) -> List[str]:
+        cleaned = list(dict.fromkeys(city.strip() for city in cities if city.strip()))
+        if not cleaned:
+            raise ValueError("At least one destination city is required")
+        return cleaned
+
+    @field_validator("origin", "destination_country")
+    @classmethod
+    def require_location(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("A city of origin and the first destination's country are required")
+        return value
 
 
 # ── Response Models ───────────────────────────────────────────────────────────

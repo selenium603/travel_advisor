@@ -17,11 +17,13 @@ from crewai import Crew, Process
 
 from backend.agents.definitions import (
     create_travel_manager,
+    create_parameter_repair_agent,
     create_travel_knowledge_agent,
     create_itinerary_compiler,
 )
 from backend.agents.tasks import (
     create_planning_task,
+    create_repair_task,
     create_knowledge_task,
     create_compilation_task,
 )
@@ -30,11 +32,15 @@ from backend.services.flights import FlightService
 from backend.services.accommodation import AccommodationService
 from backend.services.activities import ActivityService
 from backend.services.logistics import LogisticsService
+from backend.services.knowledge.rag import RAGService
+from backend.crew.plan_params import PlanParamsError, validate_plan_params
 from backend.models.schemas import (
     FlightSearchResult,
     AccommodationSearchResult,
     ActivitySearchResult,
     LogisticsResult,
+    TravelFormDetails,
+    TravelPlanParams,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +48,22 @@ logger = logging.getLogger(__name__)
 # Type for progress callback
 ProgressCallback = Optional[Callable[[str, str, str], Awaitable[None]]]
 TextCallback = Optional[Callable[[str], Awaitable[None]]]
+ParamsCallback = Optional[Callable[[TravelPlanParams], Awaitable[None]]]
+
+
+def _planning_values(output) -> dict:
+    """Read CrewAI's typed result, accepting plain JSON only as a repairable fallback."""
+    if output.pydantic is not None:
+        return output.pydantic.model_dump()
+    if output.json_dict is not None:
+        return output.json_dict
+    try:
+        values = json.loads(output.raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise PlanParamsError("规划 Agent 未返回有效的结构化参数") from exc
+    if not isinstance(values, dict):
+        raise PlanParamsError("规划 Agent 返回的参数必须是对象")
+    return values
 
 
 def _format_flights(data: FlightSearchResult) -> str:
@@ -223,10 +245,43 @@ def _format_logistics(data: LogisticsResult) -> str:
     return "\n".join(lines)
 
 
+async def _resolve_plan_params(
+    user_request: str, form_details: TravelFormDetails | None,
+    memory_context: str = "",
+):
+    """Get typed parameters, allowing exactly one repair after validation fails."""
+    manager = create_travel_manager()
+    planning_crew = Crew(
+        agents=[manager], tasks=[create_planning_task(manager, user_request, memory_context)],
+        process=Process.sequential, verbose=True,
+    )
+    planning_output = await asyncio.to_thread(planning_crew.kickoff)
+    try:
+        return validate_plan_params(_planning_values(planning_output), form_details)
+    except PlanParamsError as first_error:
+        logger.warning("Planning parameters invalid; requesting one repair: %s", first_error)
+        repair_agent = create_parameter_repair_agent()
+        repair_crew = Crew(
+            agents=[repair_agent],
+            tasks=[create_repair_task(
+                repair_agent, user_request, str(planning_output), str(first_error)
+            )],
+            process=Process.sequential, verbose=True,
+        )
+        repaired_output = await asyncio.to_thread(repair_crew.kickoff)
+        try:
+            return validate_plan_params(_planning_values(repaired_output), form_details)
+        except PlanParamsError as second_error:
+            raise PlanParamsError(f"旅行参数修复后仍无效：{second_error}") from second_error
+
+
 async def run_travel_pipeline(
     user_request: str,
     progress_callback: ProgressCallback = None,
     text_callback: TextCallback = None,
+    form_details: TravelFormDetails | None = None,
+    memory_context: str = "",
+    params_callback: ParamsCallback = None,
 ) -> str:
     """
     Main pipeline:
@@ -251,26 +306,21 @@ async def run_travel_pipeline(
     await notify("planning", "Travel Planning Manager", "running")
     logger.info("Step 1: Parsing user request with AI...")
 
-    knowledge_tool = TravelKnowledgeTool()
-    manager = create_travel_manager(tools=[knowledge_tool])
-    planning_task = create_planning_task(manager, user_request)
-
-    planning_crew = Crew(
-        agents=[manager],
-        tasks=[planning_task],
-        process=Process.sequential,
-        verbose=True,
-    )
-
-    # crew.kickoff() is synchronous — run in thread to avoid blocking the event loop
-    loop = asyncio.get_event_loop()
-    planning_result = str(await loop.run_in_executor(None, planning_crew.kickoff))
+    loop = asyncio.get_running_loop()
+    params = await _resolve_plan_params(user_request, form_details, memory_context)
+    if params_callback:
+        await params_callback(params)
+    planning_result = params.model_dump_json(indent=2)
     await notify("planning", "Travel Planning Manager", "completed")
-    logger.info(f"Planning result:\n{planning_result[:500]}")
-
-    # ── Parse structured params from AI output ─────────────────────────────
-    # Extract key parameters for API calls
-    params = _extract_params(planning_result, user_request)
+    logger.info("Validated planning parameters: %s", planning_result[:500])
+    try:
+        provider_preferences = json.loads(memory_context).get("long_term_preferences", {})
+    except (TypeError, json.JSONDecodeError, AttributeError):
+        provider_preferences = {}
+    provider_context = (
+        f"{user_request}\nCurrent trip and form values override long-term preferences: "
+        f"{json.dumps(provider_preferences, ensure_ascii=False)}"
+    )
 
     # ── Step 2: Fetch real data from APIs in parallel (NO AI) ─────────────
     await notify("data_fetch", "Fetching Real-Time Data", "running")
@@ -283,32 +333,32 @@ async def run_travel_pipeline(
 
     # All API calls happen in parallel — pure HTTP, no LLM
     flights_task = flight_service.search(
-        origin=params["origin"],
-        destination=params["destination"],
-        departure_date=params["departure_date"],
-        return_date=params.get("return_date"),
-        travelers=params["travelers"],
-        cabin_class=params["cabin_class"],
-        request_context=user_request,
+        origin=params.origin,
+        destination=params.destinations[0],
+        departure_date=params.departure_date.isoformat(),
+        return_date=params.return_date.isoformat(),
+        travelers=params.travelers,
+        cabin_class=params.cabin_class,
+        request_context=provider_context,
     )
 
     accommodation_task = accommodation_service.search(
-        destination=params["destination"],
-        check_in=params["departure_date"],
-        check_out=params.get("return_date", params["departure_date"]),
-        guests=params["travelers"],
-        request_context=user_request,
+        destination=params.destinations[0],
+        check_in=params.departure_date.isoformat(),
+        check_out=params.return_date.isoformat(),
+        guests=params.travelers,
+        request_context=provider_context,
     )
 
     activities_task = activity_service.search(
-        destination=params["destination"],
-        interests=params["interests"],
+        destination=params.destinations[0],
+        interests=params.interests,
     )
 
     logistics_task = logistics_service.get_logistics(
-        destination_city=params["destination"],
-        destination_country=params["country"],
-        origin=params["origin"],
+        destination_city=params.destinations[0],
+        destination_country=params.destination_country,
+        origin=params.origin,
     )
 
     # Execute all in parallel
@@ -322,7 +372,7 @@ async def run_travel_pipeline(
     if activities_data.attractions:
         names = [place.name for place in activities_data.attractions[:3]]
         logistics_data.routes.extend(
-            await logistics_service.get_local_routes(params["destination"], names)
+            await logistics_service.get_local_routes(params.destinations[0], names)
         )
 
     await notify("data_fetch", "Fetching Real-Time Data", "completed")
@@ -332,20 +382,26 @@ async def run_travel_pipeline(
     await notify("knowledge", "Travel Knowledge Expert", "running")
     logger.info("Step 3: Getting travel knowledge from RAG...")
 
-    knowledge_agent = create_travel_knowledge_agent(tools=[knowledge_tool])
-    knowledge_task_obj = create_knowledge_task(
-        knowledge_agent,
-        destination=", ".join(params.get("destinations", [params["destination"]])),
-    )
+    rag = await loop.run_in_executor(None, RAGService)
+    if rag._collection is None:
+        logger.warning("Travel knowledge is unavailable; continuing without local knowledge")
+        knowledge_result = "知识库暂不可用；不提供未经核实的文化、签证或当地信息。"
+    else:
+        knowledge_tool = TravelKnowledgeTool()
+        knowledge_agent = create_travel_knowledge_agent(tools=[knowledge_tool])
+        knowledge_task_obj = create_knowledge_task(
+            knowledge_agent,
+            destination=", ".join(params.destinations),
+        )
 
-    knowledge_crew = Crew(
-        agents=[knowledge_agent],
-        tasks=[knowledge_task_obj],
-        process=Process.sequential,
-        verbose=True,
-    )
+        knowledge_crew = Crew(
+            agents=[knowledge_agent],
+            tasks=[knowledge_task_obj],
+            process=Process.sequential,
+            verbose=True,
+        )
 
-    knowledge_result = str(await loop.run_in_executor(None, knowledge_crew.kickoff))
+        knowledge_result = str(await loop.run_in_executor(None, knowledge_crew.kickoff))
     await notify("knowledge", "Travel Knowledge Expert", "completed")
 
     # ── Step 4: AI compiles final itinerary ──────────────────────────────
@@ -368,6 +424,7 @@ async def run_travel_pipeline(
         activities_data=activities_text,
         logistics_data=logistics_text,
         knowledge_output=knowledge_result,
+        memory_context=memory_context,
     )
 
     compilation_crew = Crew(
@@ -401,131 +458,6 @@ async def run_travel_pipeline(
 
     logger.info(f"Itinerary compiled. Length: {len(final_result)} chars")
     return final_result
-
-
-def _extract_params(planning_output: str, original_request: str) -> dict:
-    """
-    Extract structured parameters from the planning AI output.
-    Falls back to reasonable defaults from the original request.
-    """
-    output_lower = planning_output.lower()
-    request_lower = original_request.lower()
-    import re
-    from datetime import date, timedelta
-
-    default_departure = date.today() + timedelta(days=30)
-
-    # Simple extraction — in production, you'd use a more robust parser
-    params = {
-        "origin": "",
-        "destination": "",
-        "destinations": [],
-        "country": "",
-        "departure_date": default_departure.isoformat(),
-        "return_date": (default_departure + timedelta(days=7)).isoformat(),
-        "travelers": 1,
-        "cabin_class": "economy",
-        "interests": ["food", "culture", "history"],
-    }
-
-    # Extract destination from planning output
-    common_cities = {
-        "beijing": ("北京", "China"),
-        "北京": ("北京", "China"),
-        "shanghai": ("上海", "China"),
-        "上海": ("上海", "China"),
-        "guangzhou": ("广州", "China"),
-        "广州": ("广州", "China"),
-        "shenzhen": ("深圳", "China"),
-        "深圳": ("深圳", "China"),
-        "chengdu": ("成都", "China"),
-        "成都": ("成都", "China"),
-        "paris": ("Paris", "France"),
-        "rome": ("Rome", "Italy"),
-        "florence": ("Florence", "Italy"),
-        "venice": ("Venice", "Italy"),
-        "barcelona": ("Barcelona", "Spain"),
-        "london": ("London", "United Kingdom"),
-        "tokyo": ("Tokyo", "Japan"),
-        "new york": ("New York", "United States"),
-        "dubai": ("Dubai", "United Arab Emirates"),
-        "bali": ("Bali", "Indonesia"),
-        "amsterdam": ("Amsterdam", "Netherlands"),
-        "berlin": ("Berlin", "Germany"),
-        "lisbon": ("Lisbon", "Portugal"),
-        "bangkok": ("Bangkok", "Thailand"),
-        "sydney": ("Sydney", "Australia"),
-    }
-
-    destinations = []
-    country = ""
-    for city_key, (city_name, country_name) in common_cities.items():
-        if city_key in output_lower or city_key in request_lower:
-            if city_name not in destinations:
-                destinations.append(city_name)
-            if not country:
-                country = country_name
-
-    if destinations:
-        params["destination"] = destinations[0]
-        params["destinations"] = destinations
-        params["country"] = country
-
-    destination_match = re.search(
-        r"(?im)^\s*[-*]?\s*(?:destinations?|目的地)\s*[:：]\s*(.+)$",
-        planning_output,
-    )
-    if destination_match:
-        first = re.split(r"[,，、;；]|\band\b", destination_match.group(1))[0]
-        first = re.sub(r"\([^)]*\)|（[^）]*）", "", first).strip(" []'\"。 ")
-        if first:
-            params["destination"] = first
-            params["destinations"] = [first] + [city for city in destinations if city != first]
-            if re.search(r"[\u4e00-\u9fff]", first):
-                params["country"] = "China"
-
-    origin_match = re.search(r"(?im)^\s*[-*]?\s*(?:origin|出发地)\s*[:：]\s*(.+)$", planning_output)
-    if origin_match:
-        origin = re.sub(r"\([^)]*\)|（[^）]*）", "", origin_match.group(1))
-        params["origin"] = origin.strip(" []'\"。 ")
-
-    # Extract traveler count
-    traveler_match = re.search(r"(\d+)\s*(traveler|adult|person|people)", output_lower)
-    if traveler_match:
-        params["travelers"] = int(traveler_match.group(1))
-
-    # Extract dates
-    date_match = re.findall(r"\d{4}-\d{2}-\d{2}", planning_output)
-    if len(date_match) >= 1:
-        params["departure_date"] = date_match[0]
-    if len(date_match) >= 2:
-        params["return_date"] = date_match[1]
-    elif len(date_match) == 1:
-        duration_match = re.search(r"(\d+)\s*(?:days?|天)", output_lower)
-        duration = int(duration_match.group(1)) if duration_match else 7
-        params["return_date"] = (date.fromisoformat(date_match[0]) + timedelta(days=duration)).isoformat()
-
-    # Extract cabin class
-    for cls in ["first", "business", "premium_economy"]:
-        if cls in output_lower:
-            params["cabin_class"] = cls
-            break
-
-    # Extract interests
-    interest_keywords = [
-        "food", "history", "art", "culture", "adventure", "nightlife",
-        "shopping", "nature", "beach", "wine", "architecture", "music",
-        "photography", "relaxation", "sports",
-    ]
-    found_interests = [k for k in interest_keywords if k in output_lower or k in request_lower]
-    if found_interests:
-        params["interests"] = found_interests
-
-    # Extract budget
-    if "luxury" in output_lower or "5-star" in output_lower:
-        params["cabin_class"] = params.get("cabin_class", "business")
-
-    return params
 
 
 def run_pipeline_sync(user_request: str) -> str:

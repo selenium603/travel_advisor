@@ -24,11 +24,11 @@ const INTEREST_OPTIONS = [
   { value: "Family Fun", label: "亲子活动" },
 ];
 
-export default function TripDetailsForm({ tripIdea, onSubmit, onBack, disabled }) {
+export default function TripDetailsForm({ tripIdea, initialDetails, onSubmit, onBack, disabled }) {
   const now = new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 
-  const [form, setForm] = useState({
+  const [form, setForm] = useState(() => ({
     startDate: "",
     endDate: "",
     travelers: "2",
@@ -37,7 +37,8 @@ export default function TripDetailsForm({ tripIdea, onSubmit, onBack, disabled }
     interests: [],
     specialRequirements: "",
     departureCity: "",
-  });
+    ...initialDetails,
+  }));
 
   const [errors, setErrors] = useState({});
 
@@ -95,7 +96,16 @@ export default function TripDetailsForm({ tripIdea, onSubmit, onBack, disabled }
       .filter(Boolean)
       .join("\n");
 
-    onSubmit(prompt);
+    onSubmit(prompt, {
+      origin: form.departureCity.trim(),
+      departure_date: form.startDate,
+      return_date: form.endDate,
+      travelers: Number(form.travelers),
+      budget_level: form.budget,
+      interests: form.interests,
+      traveler_details: form.travelerDetails.trim(),
+      special_requirements: form.specialRequirements.trim(),
+    });
   };
 
   return (

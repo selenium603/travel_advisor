@@ -1,6 +1,8 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import sleep
 from unittest.mock import MagicMock, Mock, patch
 
 from backend.config.settings import settings
@@ -11,6 +13,37 @@ from backend.services.knowledge.rag import (
 
 
 class RAGTests(unittest.TestCase):
+    def test_initialization_runs_once_for_concurrent_callers(self):
+        calls = []
+
+        def initialize(service):
+            calls.append(service)
+            sleep(0.02)
+            RAGService._collection = Mock()
+
+        with patch.object(RAGService, "_collection", None), patch.object(
+            RAGService, "_initialize", initialize
+        ), ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda _: RAGService(), range(4)))
+        self.assertEqual(len(calls), 1)
+
+    def test_unreadable_pdf_does_not_disable_text_knowledge(self):
+        with TemporaryDirectory() as folder:
+            Path(folder, "bad.pdf").write_bytes(b"invalid PDF")
+            Path(folder, "成都-指南.txt").write_text("# 游览\n\n武侯祠展示三国文化。", encoding="utf-8")
+            collection = Mock()
+            collection.count.return_value = 0
+            client = Mock(get_or_create_collection=Mock(return_value=collection))
+            with patch.object(settings, "openrouter_api_key", "test-key"), patch.object(
+                RAGService, "_collection", None
+            ), patch.object(RAGService, "_embed", return_value=[[1.0]]), patch(
+                "backend.services.knowledge.rag.chromadb.PersistentClient", return_value=client
+            ):
+                service = RAGService(folder)
+                self.assertIsNotNone(service._collection)
+                self.assertEqual([unit.place for unit in service._parents], ["成都"])
+                collection.upsert.assert_called_once()
+
     def test_route_units_keep_complete_routes(self):
         text = ("线路1（越秀区）：人文漫步\n线路介绍：参观纪念馆。\n游玩点位：纪念馆→公园\n\n"
                 "线路2（海珠区）：滨水漫步\n游玩点位：海心桥→广州塔")

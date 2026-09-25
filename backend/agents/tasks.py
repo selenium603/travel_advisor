@@ -3,43 +3,56 @@ Task definitions for the 3 remaining AI agents.
 """
 
 from crewai import Task, Agent
+from datetime import date
+
+from backend.models.schemas import TravelPlanParams
 
 
-def create_planning_task(agent: Agent, user_request: str) -> Task:
+def create_planning_task(agent: Agent, user_request: str, memory_context: str = "") -> Task:
     """
     Travel Manager's task: parse natural language into structured parameters.
     """
     return Task(
         description=(
-            f"Analyze this travel request and extract structured parameters:\n\n"
+            f"Today is {date.today().isoformat()}. Extract travel parameters from this request:\n\n"
             f"{user_request}\n\n"
-            f"Extract and output as a clear structured format:\n"
-            f"1. Destination(s) — city names and countries\n"
-            f"2. Origin city (if mentioned, otherwise assume a major hub)\n"
-            f"3. Duration — number of days\n"
-            f"4. Travel dates or approximate timeframe\n"
-            f"5. Number of travelers and any special needs\n"
-            f"6. Budget level (luxury, mid-range, budget)\n"
-            f"7. Key interests (food, history, art, adventure, culture, nightlife, etc.)\n"
-            f"8. Preferred cabin class for flights\n"
-            f"9. Any specific requirements (dietary, accessibility, etc.)\n\n"
-            f"If information is missing, fill in sensible defaults.\n"
-            f"Output ONLY the structured breakdown, no additional commentary."
+            f"User memory (lower priority than this request and its form): {memory_context}\n\n"
+            "Return a TravelPlanParams object. destinations must contain city names, "
+            "including cities outside any familiar example list. destination_country is "
+            "the country of the first destination. Use ISO dates (YYYY-MM-DD), and set "
+            "duration_days to the number of nights between departure_date and return_date. "
+            "The Essential Details form, when present, overrides conflicting wording in "
+            "Trip Request for origin, dates, travelers, budget, interests, and requirements. "
+            "Use budget_level budget, mid-range, luxury, or ultra-luxury; use cabin_class "
+            "economy, premium_economy, business, or first. Do not invent a destination, "
+            "origin, or dates that the traveler did not supply."
+            "Use memory only for genuinely missing preferences; never copy a previous "
+            "trip's destination, dates, or traveler count into this trip."
         ),
         expected_output=(
-            "A structured breakdown with these exact fields:\n"
-            "- Destinations: [list of cities]\n"
-            "- Origin: [city]\n"
-            "- Duration: [N days]\n"
-            "- Dates: [departure and return dates or 'flexible']\n"
-            "- Travelers: [number and type]\n"
-            "- Budget: [level]\n"
-            "- Interests: [list]\n"
-            "- Cabin Class: [economy/business/first]\n"
-            "- Special Requirements: [list or 'none']\n"
-            "- Suggested Split: [e.g., '3 days Rome, 2 days Florence']"
+            "A TravelPlanParams object with destinations, destination_country, origin, "
+            "departure_date, return_date, duration_days, travelers, budget_level, "
+            "interests, cabin_class, and special_requirements."
         ),
         agent=agent,
+        output_pydantic=TravelPlanParams,
+    )
+
+
+def create_repair_task(agent: Agent, user_request: str, previous_output: str, errors: str) -> Task:
+    """Make one attempt to repair a rejected structured planning result."""
+    return Task(
+        description=(
+            f"Original travel request:\n{user_request}\n\n"
+            f"Rejected planning output:\n{previous_output[:4000]}\n\n"
+            f"Validation errors:\n{errors}\n\n"
+            "Correct the TravelPlanParams object using only facts in the original request. "
+            "The Essential Details form takes precedence over the Trip Request wording. "
+            "Do not invent a missing city, country, origin, or date."
+        ),
+        expected_output="A corrected TravelPlanParams object satisfying the validation errors.",
+        agent=agent,
+        output_pydantic=TravelPlanParams,
     )
 
 
@@ -81,6 +94,7 @@ def create_compilation_task(
     activities_data: str,
     logistics_data: str,
     knowledge_output: str,
+    memory_context: str = "",
 ) -> Task:
     """
     Itinerary Compiler's task: synthesize all data into a day-by-day plan.
@@ -90,7 +104,8 @@ def create_compilation_task(
         description=(
             f"Create a comprehensive, day-by-day travel itinerary using the real-time data below.\n\n"
             f"## Original Request\n{user_request}\n\n"
-            f"## Travel Plan Parameters\n{planning_output}\n\n"
+            f"## Validated Travel Plan Parameters (authoritative when wording conflicts)\n{planning_output}\n\n"
+            f"## User Memory (use only when consistent with this trip)\n{memory_context}\n\n"
             f"## Available Flights (Provider response)\n{flights_data}\n\n"
             f"## Available Accommodation (Provider response)\n{accommodation_data}\n\n"
             f"## Activities, Attractions & Dining (Real-time data)\n{activities_data}\n\n"

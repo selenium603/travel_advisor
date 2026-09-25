@@ -35,6 +35,7 @@ data/appdata/
 data/crewai/
 data/runtime/
 data/itineraries.json
+data/memory.json
 
 # Output files
 travel_itinerary.md

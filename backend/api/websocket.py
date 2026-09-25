@@ -11,6 +11,10 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from backend.crew.orchestrator import run_travel_pipeline
 from backend.config.settings import settings
+from backend.models.schemas import TravelFormDetails
+from backend.models.schemas import TravelRequest
+from backend.memory.service import prepare_memory
+from backend.memory.store import memory_store
 from backend.api.itinerary_storage import load_itineraries, save_itineraries
 
 logger = logging.getLogger(__name__)
@@ -18,6 +22,7 @@ logger = logging.getLogger(__name__)
 itinerary_store: dict = load_itineraries()
 
 AGENT_STEPS = [
+    {"key": "memory", "label": "Travel Memory", "description": "Remembering your preferences..."},
     {"key": "planning", "label": "Travel Planning Manager", "description": "Analyzing your request..."},
     {"key": "data_fetch", "label": "Fetching Real-Time Data", "description": "Searching flights, hotels, activities..."},
     {"key": "knowledge", "label": "Travel Knowledge Expert", "description": "Gathering travel tips..."},
@@ -45,13 +50,21 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-async def run_with_progress(session_id: str, user_request: str):
+async def _save_session_params(session_id: str, params) -> None:
+    memory_store.record_params(session_id, params)
+
+
+async def run_with_progress(
+    session_id: str, user_request: str, form_details: TravelFormDetails | None = None,
+    trip_idea: str | None = None,
+):
     """Run the travel pipeline while sending progress updates via WebSocket."""
     itinerary_id = str(uuid.uuid4())
 
     itinerary_store[itinerary_id] = {
         "id": itinerary_id,
         "request": user_request,
+        "form_details": form_details.model_dump(mode="json") if form_details else None,
         "itinerary": "",
         "created_at": datetime.now().isoformat(),
         "status": "processing",
@@ -66,6 +79,7 @@ async def run_with_progress(session_id: str, user_request: str):
 
     try:
         async def progress_callback(step_key: str, label: str, status: str):
+            memory_store.record_state(session_id, f"{step_key}_{status}")
             step_index = next(
                 (i for i, s in enumerate(AGENT_STEPS) if s["key"] == step_key),
                 0,
@@ -83,12 +97,24 @@ async def run_with_progress(session_id: str, user_request: str):
             })
             logger.info(f"[{session_id}] {label}: {status}")
 
-        # Run the pipeline in a thread (CrewAI is sync internally)
-        loop = asyncio.get_event_loop()
+        await progress_callback("memory", "Travel Memory", "running")
+        memory_context, memory_warning = await prepare_memory(TravelRequest(
+            message=user_request, form_details=form_details,
+            session_id=session_id, trip_idea=trip_idea,
+        ))
+        await progress_callback("memory", "Travel Memory", "completed")
+        if memory_warning:
+            await manager.send_message(session_id, {"type": "memory_warning", "message": memory_warning})
+
         result = await run_travel_pipeline(
             user_request=user_request,
             progress_callback=progress_callback,
+            form_details=form_details,
+            memory_context=memory_context,
+            params_callback=lambda params: _save_session_params(session_id, params),
         )
+
+        memory_store.record_state(session_id, "completed")
 
         itinerary_store[itinerary_id]["itinerary"] = result
         itinerary_store[itinerary_id]["status"] = "completed"
@@ -102,6 +128,7 @@ async def run_with_progress(session_id: str, user_request: str):
         logger.info(f"[{session_id}] Pipeline completed")
 
     except Exception as e:
+        memory_store.record_state(session_id, "failed")
         logger.error(f"[{session_id}] Pipeline failed: {e}", exc_info=True)
         itinerary_store[itinerary_id]["status"] = "failed"
         save_itineraries(itinerary_store)
@@ -133,7 +160,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     })
                     continue
 
-                asyncio.create_task(run_with_progress(session_id, user_message))
+                try:
+                    form_details = TravelFormDetails.model_validate(data["form_details"]) if data.get("form_details") else None
+                except Exception as exc:
+                    await manager.send_message(session_id, {
+                        "type": "error", "message": f"表单参数无效：{exc}",
+                    })
+                    continue
+                asyncio.create_task(run_with_progress(
+                    session_id, user_message, form_details, data.get("trip_idea")
+                ))
 
     except WebSocketDisconnect:
         manager.disconnect(session_id)
